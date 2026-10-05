@@ -48,15 +48,29 @@ class AlertManager:
         if malicious_df.empty:
             return 0
 
+        def _first(row, keys, default):
+            for key in keys:
+                val = row.get(key)
+                if val is not None and not pd.isna(val):
+                    return val
+            return default
+
+        def _port(row, keys) -> int:
+            try:
+                return int(float(_first(row, keys, 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        # Flow CSVs such as CIC-IDS2017 often carry no IP/protocol columns; record that honestly
         records_to_insert = []
-        for _, row in malicious_df.iterrows():
+        for row in malicious_df.to_dict("records"):
             records_to_insert.append((
                 str(row.get('timestamp', '')),
-                str(row.get('SOURCE_IP', row.get('source_ip', '192.168.1.100'))),
-                str(row.get('DESTINATION_IP', row.get('dest_ip', '192.168.1.1'))),
-                str(row.get('PROTOCOL', row.get('protocol', 'TCP'))),
-                int(row.get('SOURCE_PORT', row.get('source_port', 0))),
-                int(row.get('DESTINATION_PORT', row.get('destination_port', 0))),
+                str(_first(row, ['SOURCE_IP', 'SRC_IP', 'source_ip'], 'N/A')),
+                str(_first(row, ['DESTINATION_IP', 'DST_IP', 'dest_ip'], 'N/A')),
+                str(_first(row, ['PROTOCOL', 'protocol'], 'N/A')),
+                _port(row, ['SOURCE_PORT', 'source_port']),
+                _port(row, ['DESTINATION_PORT', 'destination_port']),
                 str(row.get('attack_category', 'Malicious')),
                 str(row.get('detection_method', 'Hybrid')),
                 str(row.get('severity', 'Medium')),

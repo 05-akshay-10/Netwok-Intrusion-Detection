@@ -6,14 +6,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.alert_manager import AlertManager
+from src.ui import setup_page
 
-st.set_page_config(page_title="Dashboard Overview | Hybrid NIDS", page_icon="📊", layout="wide")
-
-st.title("📊 Dashboard Overview")
-st.markdown("Real-time telemetry, traffic distribution, and intrusion alert summary.")
+setup_page("Dashboard", "📊", "Dashboard Overview", "Traffic distribution and intrusion alert summary for the most recent analysis.")
 
 alert_mgr = AlertManager()
 alerts_df = alert_mgr.get_all_alerts()
+
+showing_baseline = False
+baseline_attacks = {}
 
 # Check if analysis results exist in session state
 analyzed_df = st.session_state.get("analyzed_df", pd.DataFrame())
@@ -30,17 +31,24 @@ else:
     if os.path.exists(summary_path):
         with open(summary_path, "r") as f:
             summary = json.load(f)
-        total_flows = summary.get("total_samples", 300000)
-        benign_count = 223955
-        malicious_count = 76045
-        attack_categories_count = 14
+        # Real label counts of the training dataset, recorded by src/train.py
+        class_dist = summary.get("class_distribution", {})
+        baseline_attacks = summary.get("attack_distribution", {})
+        benign_count = class_dist.get("benign", 0)
+        malicious_count = class_dist.get("malicious", 0)
+        total_flows = benign_count + malicious_count
+        attack_categories_count = len(baseline_attacks)
         total_alerts = len(alerts_df)
+        showing_baseline = total_flows > 0
     else:
         total_flows = 0
         benign_count = 0
         malicious_count = 0
         attack_categories_count = 0
         total_alerts = len(alerts_df)
+
+if showing_baseline:
+    st.info("No traffic analyzed in this session yet. Showing the **labelled training dataset (CIC-IDS2017)** as a baseline. Run the Traffic Analyzer to see detection results.")
 
 # KPI Cards Row
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
@@ -84,7 +92,7 @@ else:
             font=dict(color="#e2e8f0"),
             margin=dict(t=30, b=30, l=30, r=30)
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        st.plotly_chart(fig_donut, width="stretch")
         st.caption("Distribution between safe benign network flows and flagged malicious intrusion attempts.")
 
     with c2:
@@ -93,10 +101,9 @@ else:
             attack_df = analyzed_df[analyzed_df['final_prediction'] == 'Malicious']['attack_category'].value_counts().reset_index()
             attack_df.columns = ['Attack Category', 'Count']
         else:
-            # Baseline dataset categories sample
             attack_df = pd.DataFrame({
-                'Attack Category': ['DoS Hulk', 'DDoS', 'DoS GoldenEye', 'PortScan', 'FTP-Patator', 'DoS slowloris', 'SSH-Patator', 'Bot'],
-                'Count': [18478, 13685, 10286, 9695, 5931, 5385, 3219, 1948]
+                'Attack Category': list(baseline_attacks.keys()),
+                'Count': list(baseline_attacks.values())
             })
 
         fig_bar = px.bar(
@@ -114,7 +121,7 @@ else:
             yaxis=dict(autorange="reversed"),
             margin=dict(t=30, b=30, l=30, r=30)
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
         st.caption("Top detected attack vectors ranked by occurrence volume.")
 
     st.markdown("---")
@@ -127,10 +134,8 @@ else:
             sev_df = alerts_df['severity'].value_counts().reset_index()
             sev_df.columns = ['Severity', 'Count']
         else:
-            sev_df = pd.DataFrame({
-                'Severity': ['High', 'Medium', 'Low'],
-                'Count': [malicious_count // 2, malicious_count // 3, malicious_count // 6]
-            })
+            sev_df = pd.DataFrame(columns=['Severity', 'Count'])
+            st.write("No alerts recorded yet.")
             
         fig_sev = px.pie(
             sev_df,
@@ -144,13 +149,14 @@ else:
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0")
         )
-        st.plotly_chart(fig_sev, use_container_width=True)
+        if not sev_df.empty:
+            st.plotly_chart(fig_sev, width="stretch")
 
     with r2:
         st.subheader("Recent Intrusion Alerts")
         if not alerts_df.empty:
             display_cols = ['timestamp', 'source_ip', 'destination_ip', 'destination_port', 'attack_category', 'detection_method', 'severity']
             cols_to_show = [c for c in display_cols if c in alerts_df.columns]
-            st.dataframe(alerts_df[cols_to_show].head(8), use_container_width=True)
+            st.dataframe(alerts_df[cols_to_show].head(8), width="stretch")
         else:
             st.write("No alerts recorded in persistent database yet.")

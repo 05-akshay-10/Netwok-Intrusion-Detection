@@ -32,10 +32,9 @@ htmlcov/
 data/raw/*
 !data/raw/.gitkeep
 models/*.joblib
+data/alerts.db
 !models/.gitkeep
 
-# Streamlit
-.streamlit/
 
 # OS
 .DS_Store

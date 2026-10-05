@@ -3,11 +3,9 @@ import streamlit as st
 import pandas as pd
 
 from src.live_capture import LivePacketCapturer, SCAPY_AVAILABLE
+from src.ui import setup_page
 
-st.set_page_config(page_title="Network Monitoring | Hybrid NIDS", page_icon="📡", layout="wide")
-
-st.title("📡 Live Network Packet Capture & Monitoring")
-st.markdown("Monitor live network traffic on an authorized local network interface and run rule-based intrusion checks in real-time.")
+setup_page("Network Monitoring", "📡", "Live Network Packet Capture & Monitoring", "Monitor live traffic on an authorized local interface and run rule-based checks in real time (ML needs full flow features, so live capture is rules-only).")
 
 if not SCAPY_AVAILABLE:
     st.warning("⚠️ **Scapy is unavailable or missing required driver support (Npcap/WinPcap).**")
@@ -29,7 +27,7 @@ else:
     with c2:
         st.write("") # Padding
         if not capturer.is_capturing:
-            if st.button("▶️ Start Monitoring", type="primary", use_container_width=True):
+            if st.button("▶️ Start Monitoring", type="primary", width="stretch"):
                 try:
                     capturer.start_capture(selected_iface)
                     st.success("Started live network packet monitoring!")
@@ -37,14 +35,14 @@ else:
                 except Exception as e:
                     st.error(f"Could not start capture: {e}")
         else:
-            if st.button("⏹️ Stop Monitoring", type="secondary", use_container_width=True):
+            if st.button("⏹️ Stop Monitoring", type="secondary", width="stretch"):
                 capturer.stop_capture()
                 st.info("Stopped live network monitoring.")
                 st.rerun()
 
     with c3:
         st.write("") # Padding
-        if st.button("🔄 Refresh Telemetry", use_container_width=True):
+        if st.button("🔄 Refresh Telemetry", width="stretch"):
             st.rerun()
 
     st.markdown("---")
@@ -56,7 +54,7 @@ else:
     status_text = "🟢 ACTIVE CAPTURE" if stats["is_capturing"] else "🔴 STOPPED"
     m1.metric("Capture Status", status_text)
     m2.metric("Total Captured Packets", f"{stats['total_packets']:,}")
-    m3.metric("Active 5-Tuple Flows", f"{stats['active_flows']:,}")
+    m3.metric("Active Flows", f"{stats['active_flows']:,}")
     m4.metric("Live Rule Alerts", f"{stats['alert_count']:,}")
 
     st.markdown("---")
@@ -66,7 +64,7 @@ else:
 
     if live_alerts:
         alerts_df = pd.DataFrame(live_alerts)
-        st.dataframe(alerts_df, use_container_width=True)
+        st.dataframe(alerts_df, width="stretch")
     else:
         if stats["is_capturing"]:
             st.info("Monitoring network traffic... No rule-based intrusion alerts triggered yet.")

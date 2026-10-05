@@ -90,7 +90,6 @@ def find_dataset_files(base_dir: str = ".") -> list[str]:
         os.path.join(base_dir, "data", "raw", "*.txt"),
         os.path.join(base_dir, "data", "raw", "*.csv"),
         os.path.join(base_dir, "*.csv"),
-        os.path.join(base_dir, "*.txt"),
     ]
     found_files = []
     for pattern in search_patterns:
@@ -139,9 +138,10 @@ def load_dataset(
     # Normalize column names
     df = normalize_column_names(df)
     
-    # Strip string values if any object columns exist
-    for col in df.select_dtypes(include=['object']).columns:
-        df[col] = df[col].astype(str).str.strip()
+    # Strip string values if any text columns exist (object or pandas string dtype)
+    for col in df.columns:
+        if df[col].dtype == object or pd.api.types.is_string_dtype(df[col]):
+            df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
 
     if sample_size and sample_size < len(df):
         df = df.sample(n=sample_size, random_state=random_state).reset_index(drop=True)

@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 
+from src.data_loader import normalize_column_names
 from src.predict import NIDSPredictor
 from src.rules import RuleBasedEngine
 
@@ -19,6 +20,9 @@ class HybridDetector:
         if len(df) == 0:
             return pd.DataFrame()
 
+        # Map raw CIC-IDS2017 headers (e.g. " Destination Port") to the training schema
+        df = normalize_column_names(df).reset_index(drop=True)
+
         # 1. Run ML Predictor
         ml_results_df = self.predictor.predict_dataframe(df)
 
@@ -29,16 +33,13 @@ class HybridDetector:
         combined_rows = []
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        for idx in range(len(ml_results_df)):
-            row_ml = ml_results_df.iloc[idx]
-            rule_alerts = rule_alerts_list[idx]
+        for row_dict, rule_alerts in zip(ml_results_df.to_dict("records"), rule_alerts_list):
+            ml_conf = float(row_dict.get('ml_confidence', 0.0))
+            ml_attack = str(row_dict.get('ml_attack_category', 'Benign'))
+            is_anomaly = bool(row_dict.get('ml_is_anomaly', False))
 
-            ml_conf = float(row_ml.get('ml_confidence', 0.0))
-            ml_pred = int(row_ml.get('ml_binary_pred', 0))
-            ml_attack = str(row_ml.get('ml_attack_category', 'Benign'))
-            is_anomaly = bool(row_ml.get('ml_is_anomaly', False))
-
-            ml_flagged = (ml_conf >= ml_threshold) or (ml_pred == 1)
+            # The sensitivity threshold alone decides the ML verdict
+            ml_flagged = ml_conf >= ml_threshold
             rules_flagged = len(rule_alerts) > 0
 
             # Determine Detection Method
@@ -55,21 +56,21 @@ class HybridDetector:
                 method = "Neither (Benign)"
                 final_class = "Benign"
 
-            # Determine Severity
+            # Determine Severity (benign flows carry no severity)
             rule_severities = [a['severity'] for a in rule_alerts]
-            if "High" in rule_severities or (ml_flagged and rules_flagged) or ml_conf >= 0.85:
-                severity = "High"
-            elif "Medium" in rule_severities or ml_conf >= 0.5:
-                severity = "Medium"
-            elif "Low" in rule_severities or is_anomaly:
-                severity = "Low"
-            else:
+            if final_class == "Benign":
                 severity = "None"
+            elif "High" in rule_severities or (ml_flagged and rules_flagged) or (ml_flagged and ml_conf >= 0.85):
+                severity = "High"
+            elif "Medium" in rule_severities or ml_flagged:
+                severity = "Medium"
+            else:
+                severity = "Low"
 
             # Attack category refinement
             if final_class == "Benign":
                 attack_category = "Benign"
-            elif ml_attack != "Benign":
+            elif ml_flagged and ml_attack.upper() != "BENIGN":
                 attack_category = ml_attack
             elif rules_flagged:
                 attack_category = rule_alerts[0]['rule_name']
@@ -85,15 +86,14 @@ class HybridDetector:
                 exp_parts.append(f"Rule engine triggered {len(rule_alerts)} alert(s): {', '.join(rule_names)}.")
                 for a in rule_alerts:
                     exp_parts.append(f"  • [{a['rule_name']}]: {a['explanation']}")
-            if is_anomaly and not ml_flagged and not rules_flagged:
-                exp_parts.append("Isolation Forest detected an unusual statistical flow pattern (Anomaly).")
-            if not exp_parts:
-                exp_parts.append("Flow patterns match standard benign network traffic parameters.")
+            if is_anomaly:
+                exp_parts.append("Isolation Forest also scored this flow as statistically unusual (Anomaly).")
+            if not ml_flagged and not rules_flagged:
+                exp_parts.insert(0, "Flow patterns match standard benign network traffic parameters.")
 
             explanation = " ".join(exp_parts)
             rule_names_str = ", ".join([a['rule_name'] for a in rule_alerts]) if rule_alerts else "None"
 
-            row_dict = row_ml.to_dict()
             row_dict.update({
                 "timestamp": now_str,
                 "final_prediction": final_class,

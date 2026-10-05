@@ -3,14 +3,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from src.data_loader import find_dataset_files, load_dataset
+from src.data_loader import find_dataset_files, load_dataset, normalize_column_names
 from src.hybrid_detector import HybridDetector
 from src.alert_manager import AlertManager
+from src.ui import setup_page
 
-st.set_page_config(page_title="Traffic Analyzer | Hybrid NIDS", page_icon="🔍", layout="wide")
-
-st.title("🔍 Network Traffic Analyzer")
-st.markdown("Upload network flow CSV files or select sample dataset for hybrid machine learning and rule-based inspection.")
+setup_page("Traffic Analyzer", "🔍", "Network Traffic Analyzer", "Upload network flow CSV files or select sample dataset for hybrid machine learning and rule-based inspection.")
 
 # Initialize Session State for Detector
 if "hybrid_detector" not in st.session_state:
@@ -28,7 +26,8 @@ with tab_upload:
     uploaded_file = st.file_uploader("Upload Network Flow CSV or TXT file", type=["csv", "txt"])
     if uploaded_file is not None:
         try:
-            df_upload = pd.read_csv(uploaded_file, low_memory=False)
+            # Normalize headers so raw CIC-IDS2017 exports (" Destination Port") match the trained schema
+            df_upload = normalize_column_names(pd.read_csv(uploaded_file, low_memory=False))
             selected_df = df_upload
             data_source_name = uploaded_file.name
             st.success(f"File '{uploaded_file.name}' uploaded successfully ({len(df_upload):,} rows, {len(df_upload.columns)} columns).")
@@ -65,7 +64,7 @@ if selected_df is not None:
     col3.metric("Missing Values", f"{selected_df.isna().sum().sum():,}")
 
     with st.expander("Inspect Raw Data & Columns", expanded=False):
-        st.dataframe(selected_df.head(10), use_container_width=True)
+        st.dataframe(selected_df.head(10), width="stretch")
         st.write("Column Names:", selected_df.columns.tolist())
 
     st.markdown("---")
@@ -77,11 +76,17 @@ if selected_df is not None:
     
     with c_btn:
         st.write("") # Padding
-        run_analysis = st.button("⚡ Run Hybrid Detection", type="primary", use_container_width=True)
+        run_analysis = st.button("⚡ Run Hybrid Detection", type="primary", width="stretch")
 
     if run_analysis:
         with st.spinner("Executing Random Forest ML inference and evaluating Rule-Based heuristics..."):
             detector: HybridDetector = st.session_state["hybrid_detector"]
+            if not detector.predictor.is_ready():
+                # Models may have been trained after this session started
+                detector = st.session_state["hybrid_detector"] = HybridDetector()
+            if not detector.predictor.is_ready():
+                st.error("ML model not found in `models/`. Train it first with `python -m src.train`.")
+                st.stop()
             results_df = detector.analyze(selected_df, ml_threshold=ml_thresh)
             
             # Save results to session state
@@ -98,11 +103,12 @@ if selected_df is not None:
         st.markdown("### Analysis Results Summary")
         
         # Summary metrics
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total Analyzed", f"{len(res_df):,}")
         m2.metric("Benign Flows", f"{(res_df['final_prediction']=='Benign').sum():,}")
         m3.metric("Malicious Flagged", f"{(res_df['final_prediction']=='Malicious').sum():,}")
         m4.metric("Both ML & Rules Flagged", f"{(res_df['detection_method']=='Both ML & Rules').sum():,}")
+        m5.metric("Isolation Forest Anomalies", f"{res_df['ml_is_anomaly'].sum():,}")
 
         st.markdown("---")
         st.subheader("Interactive Traffic Results Table")
@@ -125,11 +131,11 @@ if selected_df is not None:
         # Selected presentation columns
         cols_priority = [
             'final_prediction', 'attack_category', 'detection_method', 'severity',
-            'ml_confidence_pct', 'triggered_rules', 'DESTINATION_PORT', 'FLOW_DURATION', 'FLOW_PACKETS_S', 'explanation'
+            'ml_confidence_pct', 'ml_attack_category', 'ml_is_anomaly', 'triggered_rules', 'DESTINATION_PORT', 'FLOW_DURATION', 'FLOW_PACKETS_S', 'explanation'
         ]
         present_cols = [c for c in cols_priority if c in filtered_res.columns]
 
-        st.dataframe(filtered_res[present_cols], use_container_width=True)
+        st.dataframe(filtered_res[present_cols], width="stretch")
 
         # CSV Download Button
         csv_data = filtered_res.to_csv(index=False).encode('utf-8')

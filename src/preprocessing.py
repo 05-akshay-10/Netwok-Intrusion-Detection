@@ -10,9 +10,10 @@ SCALER_PATH = os.path.join("models", "feature_scaler.joblib")
 FEATURE_NAMES_PATH = os.path.join("models", "feature_names.joblib")
 
 
-def clean_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
+def clean_dataframe(df: pd.DataFrame, drop_duplicates: bool = True) -> Tuple[pd.DataFrame, Dict[str, int]]:
     """
     Clean dataset by handling infinite values, NaNs, and duplicates.
+    Pass drop_duplicates=False at inference time so output rows stay aligned with input rows.
     """
     initial_count = len(df)
     
@@ -40,8 +41,10 @@ def clean_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
             cleaned[col] = cleaned[col].fillna(median_val if not np.isnan(median_val) else 0.0)
             
     # Remove duplicate rows
-    dupes_count = cleaned.duplicated().sum()
-    cleaned = cleaned.drop_duplicates().reset_index(drop=True)
+    dupes_count = 0
+    if drop_duplicates:
+        dupes_count = cleaned.duplicated().sum()
+        cleaned = cleaned.drop_duplicates().reset_index(drop=True)
     
     retained_count = len(cleaned)
     
@@ -125,39 +128,33 @@ def fit_and_split_data(
     Fits StandardScaler ONLY on training data to prevent data leakage.
     Saves scaler and feature list to models/.
     """
+    # Split row positions ONCE so X, y_binary and y_attack always refer to the same rows.
+    # Stratify on attack category when every class is large enough, else on the binary label.
+    def _split(idx: np.ndarray, size: float) -> Tuple[np.ndarray, np.ndarray]:
+        if y_attack is not None:
+            try:
+                return train_test_split(
+                    idx, test_size=size, random_state=random_state, stratify=y_attack.iloc[idx]
+                )
+            except ValueError:
+                pass
+        return train_test_split(
+            idx, test_size=size, random_state=random_state, stratify=y_binary.iloc[idx]
+        )
+
     # 1. First split out test set
-    X_train_val, X_test, y_bin_train_val, y_bin_test = train_test_split(
-        X, y_binary, test_size=test_size, random_state=random_state, stratify=y_binary
-    )
-    
-    y_att_train_val, y_att_test = None, None
-    if y_attack is not None:
-        # Stratify on y_attack if possible, else y_binary
-        try:
-            _, _, y_att_train_val, y_att_test = train_test_split(
-                X, y_attack, test_size=test_size, random_state=random_state, stratify=y_attack
-            )
-        except ValueError:
-            _, _, y_att_train_val, y_att_test = train_test_split(
-                X, y_attack, test_size=test_size, random_state=random_state, stratify=y_binary
-            )
+    train_val_idx, test_idx = _split(np.arange(len(X)), test_size)
 
     # 2. Split train_val into train and validation sets
     relative_val_size = val_size / (1.0 - test_size)
-    X_train, X_val, y_bin_train, y_bin_val = train_test_split(
-        X_train_val, y_bin_train_val, test_size=relative_val_size, random_state=random_state, stratify=y_bin_train_val
-    )
-    
-    y_att_train, y_att_val = None, None
-    if y_att_train_val is not None:
-        try:
-            _, _, y_att_train, y_att_val = train_test_split(
-                X_train_val, y_att_train_val, test_size=relative_val_size, random_state=random_state, stratify=y_att_train_val
-            )
-        except ValueError:
-            _, _, y_att_train, y_att_val = train_test_split(
-                X_train_val, y_att_train_val, test_size=relative_val_size, random_state=random_state, stratify=y_bin_train_val
-            )
+    train_idx, val_idx = _split(train_val_idx, relative_val_size)
+
+    X_train, X_val, X_test = X.iloc[train_idx], X.iloc[val_idx], X.iloc[test_idx]
+    y_bin_train, y_bin_val, y_bin_test = y_binary.iloc[train_idx], y_binary.iloc[val_idx], y_binary.iloc[test_idx]
+
+    y_att_train, y_att_val, y_att_test = None, None, None
+    if y_attack is not None:
+        y_att_train, y_att_val, y_att_test = y_attack.iloc[train_idx], y_attack.iloc[val_idx], y_attack.iloc[test_idx]
 
     # 3. Fit scaler ONLY on X_train
     scaler = StandardScaler()
@@ -201,18 +198,18 @@ def transform_new_data(df: pd.DataFrame) -> Tuple[np.ndarray, pd.DataFrame, List
     scaler: StandardScaler = joblib.load(SCALER_PATH)
     feature_names: List[str] = joblib.load(FEATURE_NAMES_PATH)
 
-    # Clean input df
-    df_clean, _ = clean_dataframe(df)
+    # Clean input df (keep duplicates: every input flow must get exactly one prediction)
+    df_clean, _ = clean_dataframe(df, drop_duplicates=False)
 
     # Align columns to match training features exactly
     aligned_df = pd.DataFrame(index=df_clean.index)
     for col in feature_names:
         if col in df_clean.columns:
-            aligned_df[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0.0)
+            aligned_df[col] = pd.to_numeric(df_clean[col], errors='coerce').replace([np.inf, -np.inf], np.nan).fillna(0.0)
         else:
             aligned_df[col] = 0.0
 
-    # Scale aligned features
+    # Scale aligned features (column names match those the scaler was fitted with)
     X_scaled = scaler.transform(aligned_df)
 
     return X_scaled, aligned_df, feature_names

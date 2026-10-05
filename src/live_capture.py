@@ -1,11 +1,10 @@
 import time
-import threading
 import pandas as pd
 from typing import Dict, Any, List, Optional
 from collections import defaultdict
 
 try:
-    from scapy.all import sniff, get_if_list, IP, TCP, UDP
+    from scapy.all import AsyncSniffer, get_if_list, get_working_ifaces, IP, TCP, UDP
     SCAPY_AVAILABLE = True
 except Exception:
     SCAPY_AVAILABLE = False
@@ -17,7 +16,7 @@ class LivePacketCapturer:
     def __init__(self, rule_engine: Optional[RuleBasedEngine] = None):
         self.rule_engine = rule_engine if rule_engine is not None else RuleBasedEngine()
         self.is_capturing = False
-        self.capture_thread = None
+        self.sniffer = None
         self.packet_count = 0
         self.flows = defaultdict(lambda: {
             "start_time": time.time(),
@@ -39,7 +38,8 @@ class LivePacketCapturer:
         if not SCAPY_AVAILABLE:
             return ["Default Adapter (Scapy Not Installed)"]
         try:
-            interfaces = get_if_list()
+            # Friendly adapter names (get_if_list returns raw NPF GUIDs on Windows)
+            interfaces = [iface.name for iface in get_working_ifaces()] or get_if_list()
             return interfaces if interfaces else ["Default Adapter"]
         except Exception:
             return ["Default Adapter"]
@@ -83,8 +83,8 @@ class LivePacketCapturer:
         if 'U' in flags:
             flow_data["urg_flags"] += 1
 
-        # Periodic check per 10 packets for live rule alert
-        if self.packet_count % 10 == 0:
+        # Periodic check every 10 packets of this flow for live rule alert
+        if flow_data["fwd_packets"] % 10 == 0:
             duration_us = (now - flow_data["start_time"]) * 1_000_000.0
             pkts_per_s = (flow_data["fwd_packets"] / (duration_us / 1_000_000.0)) if duration_us > 0 else 0
 
@@ -93,6 +93,7 @@ class LivePacketCapturer:
                 "FLOW_DURATION": duration_us,
                 "FLOW_PACKETS_S": pkts_per_s,
                 "TOTAL_FWD_PACKETS": flow_data["fwd_packets"],
+                "TOTAL_LENGTH_OF_FWD_PACKETS": flow_data["fwd_bytes"],
                 "PACKET_LENGTH_MEAN": flow_data["fwd_bytes"] / max(1, flow_data["fwd_packets"]),
                 "PSH_FLAG_COUNT": flow_data["psh_flags"],
                 "URG_FLAG_COUNT": flow_data["urg_flags"]
@@ -121,27 +122,26 @@ class LivePacketCapturer:
         if self.is_capturing:
             return
 
-        self.is_capturing = True
         self.packet_count = 0
         self.flows.clear()
         self.alerts.clear()
 
-        def _sniff_target():
-            try:
-                kwargs = {"prn": self._packet_callback, "store": False}
-                if interface and interface != "Default Adapter":
-                    kwargs["iface"] = interface
-                sniff(**kwargs)
-            except Exception as e:
-                print(f"[!] Live capture error: {e}")
-            finally:
-                self.is_capturing = False
-
-        self.capture_thread = threading.Thread(target=_sniff_target, daemon=True)
-        self.capture_thread.start()
+        kwargs = {"prn": self._packet_callback, "store": False}
+        if interface and not interface.startswith("Default Adapter"):
+            kwargs["iface"] = interface
+        self.sniffer = AsyncSniffer(**kwargs)
+        self.sniffer.start()
+        self.is_capturing = True
 
     def stop_capture(self):
+        """Actually stop the background sniffer thread, not just the status flag."""
         self.is_capturing = False
+        sniffer, self.sniffer = self.sniffer, None
+        if sniffer is not None:
+            try:
+                sniffer.stop()
+            except Exception as e:
+                print(f"[!] Live capture stop error: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Return live capture stats."""

@@ -1,11 +1,9 @@
 import streamlit as st
 import pandas as pd
 from src.alert_manager import AlertManager
+from src.ui import setup_page
 
-st.set_page_config(page_title="Intrusion Alerts | Hybrid NIDS", page_icon="🚨", layout="wide")
-
-st.title("🚨 Intrusion Alerts Monitor")
-st.markdown("Persistent security alert logs recorded in SQLite database.")
+setup_page("Intrusion Alerts", "🚨", "Intrusion Alerts Monitor", "Persistent security alert logs recorded in SQLite database.")
 
 alert_mgr = AlertManager()
 
@@ -27,7 +25,7 @@ with c4:
 alerts_df = alert_mgr.get_all_alerts(severity_filter=sev_filter, method_filter=method_filter)
 
 if not alerts_df.empty and search_query:
-    search_mask = alerts_df.astype(str).apply(lambda row: row.str.contains(search_query, case=False).any(), axis=1)
+    search_mask = alerts_df.astype(str).apply(lambda row: row.str.contains(search_query, case=False, regex=False).any(), axis=1)
     alerts_df = alerts_df[search_mask]
 
 # Summary KPI Header
@@ -52,7 +50,7 @@ else:
     table_cols = ['id', 'timestamp', 'source_ip', 'destination_ip', 'destination_port', 'attack_category', 'detection_method', 'severity', 'ml_confidence', 'triggered_rules']
     show_cols = [c for c in table_cols if c in alerts_df.columns]
     
-    st.dataframe(alerts_df[show_cols], use_container_width=True)
+    st.dataframe(alerts_df[show_cols], width="stretch")
 
     # Detailed Alert Inspector Expander
     st.markdown("---")

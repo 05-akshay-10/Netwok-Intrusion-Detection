@@ -11,6 +11,7 @@ from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from src.data_loader import find_dataset_files, load_dataset
 from src.preprocessing import prepare_features_and_labels, fit_and_split_data
 from src.metrics import calculate_metrics, measure_inference_latency
+from src.rules import RuleBasedEngine
 
 MODEL_DIR = "models"
 BINARY_MODEL_PATH = os.path.join(MODEL_DIR, "random_forest_binary.joblib")
@@ -120,7 +121,7 @@ def train_nids_models(
 
     # 3. Train Isolation Forest (Anomaly Detector on Benign samples)
     print("[*] Training Isolation Forest on benign samples for unsupervised anomaly detection...")
-    benign_indices = (y_bin_train == 0)
+    benign_indices = (y_bin_train == 0).to_numpy()
     X_benign_train = X_train[benign_indices]
     
     iso_forest = IsolationForest(
@@ -133,10 +134,32 @@ def train_nids_models(
     joblib.dump(iso_forest, ISOLATION_FOREST_PATH)
     print(f"[+] Isolation Forest model saved to {ISOLATION_FOREST_PATH}")
 
+    # 4. Evaluate the Rule Engine and the combined Hybrid decision on the same held-out test set
+    print("[*] Evaluating rule engine and hybrid (ML OR Rules) decision on the test set...")
+    rule_alerts = RuleBasedEngine().analyze_dataframe(split_data["X_test_df"])
+    y_rule_pred = np.array([1 if alerts else 0 for alerts in rule_alerts])
+    y_hybrid_pred = np.maximum(np.asarray(y_bin_pred), y_rule_pred)
+    rules_metrics = calculate_metrics(y_bin_test, y_rule_pred, is_multiclass=False)
+    hybrid_metrics = calculate_metrics(y_bin_test, y_hybrid_pred, is_multiclass=False)
+    for m in (rules_metrics, hybrid_metrics):
+        m.pop("classification_report", None)
+
+    # Isolation Forest: how often does it flag benign vs attack test flows?
+    iso_flags = iso_forest.predict(X_test) == -1
+    iso_metrics = {
+        "benign_flag_rate": float(iso_flags[(y_bin_test == 0).to_numpy()].mean()),
+        "attack_flag_rate": float(iso_flags[(y_bin_test == 1).to_numpy()].mean()),
+    }
+
     # Combine Summary
     summary = {
         "dataset_file": file_path,
-        "total_samples": len(df),
+        "total_samples": len(X),
+        "class_distribution": {
+            "benign": int((y_binary == 0).sum()),
+            "malicious": int((y_binary == 1).sum())
+        },
+        "attack_distribution": {str(k): int(v) for k, v in y_attack[y_binary == 1].value_counts().items()},
         "train_samples": len(X_train),
         "val_samples": len(X_val),
         "test_samples": len(X_test),
@@ -146,6 +169,9 @@ def train_nids_models(
         "prediction_latency_ms": latency_ms,
         "binary": binary_metrics,
         "multiclass": multiclass_metrics,
+        "isolation_forest": iso_metrics,
+        "rules": rules_metrics,
+        "hybrid": hybrid_metrics,
         "top_features": top_features[:20]
     }
 
@@ -158,6 +184,11 @@ def train_nids_models(
     print(f"    - Recall: {binary_metrics['recall']*100:.2f}%")
     print(f"    - F1-Score: {binary_metrics['f1_score']*100:.2f}%")
     print(f"    - FPR: {binary_metrics['false_positive_rate']*100:.2f}%")
+    if multiclass_metrics:
+        print(f"    - Multiclass accuracy: {multiclass_metrics['accuracy']*100:.2f}% (macro F1 {multiclass_metrics['f1_macro']*100:.2f}%)")
+    print(f"    - Isolation Forest flags: {iso_metrics['benign_flag_rate']*100:.2f}% of benign, {iso_metrics['attack_flag_rate']*100:.2f}% of attacks")
+    print(f"    - Rules only: recall {rules_metrics['recall']*100:.2f}%, FPR {rules_metrics['false_positive_rate']*100:.2f}%")
+    print(f"    - Hybrid    : recall {hybrid_metrics['recall']*100:.2f}%, FPR {hybrid_metrics['false_positive_rate']*100:.2f}%")
 
     return summary
 

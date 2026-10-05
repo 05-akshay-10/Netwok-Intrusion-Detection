@@ -7,11 +7,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.metrics import generate_evaluation_report_text
+from src.ui import setup_page
 
-st.set_page_config(page_title="Model Performance | Hybrid NIDS", page_icon="📈", layout="wide")
-
-st.title("📈 Machine Learning Model Performance")
-st.markdown("Measured evaluation metrics, confusion matrix, ROC curve, and feature importances for the Random Forest classifier.")
+setup_page("Model Performance", "📈", "Machine Learning Model Performance", "Measured results on the 15% held-out test set for the binary Random Forest, the multiclass Random Forest, the Isolation Forest, the rules and the hybrid combination.")
 
 SUMMARY_PATH = os.path.join("models", "metrics_summary.json")
 
@@ -21,8 +19,8 @@ else:
     with open(SUMMARY_PATH, "r") as f:
         summary = json.load(f)
 
-    bin_m = summary.get("binary", {})
-    multi_m = summary.get("multiclass", {})
+    bin_m = summary.get("binary") or {}
+    multi_m = summary.get("multiclass") or {}
 
     # Top Metric Cards
     m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -58,7 +56,7 @@ else:
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0")
         )
-        st.plotly_chart(fig_cm, use_container_width=True)
+        st.plotly_chart(fig_cm, width="stretch")
         st.caption("Confusion matrix evaluated strictly on the 15% held-out test set.")
 
     with c2:
@@ -79,10 +77,55 @@ else:
                 plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#e2e8f0")
             )
-            st.plotly_chart(fig_roc, use_container_width=True)
+            st.plotly_chart(fig_roc, width="stretch")
             st.caption(f"ROC Curve showing trade-off between sensitivity and specificity (AUC = {auc_val:.4f}).")
         else:
             st.info("ROC Curve data not available.")
+
+    st.markdown("---")
+
+    # ML vs Rules vs Hybrid comparison (all on the same held-out test set)
+    rules_m = summary.get("rules") or {}
+    hybrid_m = summary.get("hybrid") or {}
+    if rules_m and hybrid_m:
+        st.subheader("Detection Method Comparison (Held-out Test Set)")
+        cmp_rows = []
+        for name, m in [("ML Only (Random Forest)", bin_m), ("Rules Only", rules_m), ("Hybrid (ML OR Rules)", hybrid_m)]:
+            cmp_rows.append({
+                "Method": name,
+                "Accuracy %": round(m.get("accuracy", 0.0) * 100, 2),
+                "Precision %": round(m.get("precision", 0.0) * 100, 2),
+                "Recall %": round(m.get("recall", 0.0) * 100, 2),
+                "F1 %": round(m.get("f1_score", 0.0) * 100, 2),
+                "False Positive Rate %": round(m.get("false_positive_rate", 0.0) * 100, 2),
+            })
+        st.dataframe(pd.DataFrame(cmp_rows), width="stretch", hide_index=True)
+        st.caption("A flow is flagged by the hybrid system when either the ML model or any rule fires. Rules add explainable reasons to alerts; they also add their own false positives.")
+
+    if multi_m:
+        st.subheader("Attack Category Classifier (Multiclass Random Forest)")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Accuracy", f"{multi_m.get('accuracy', 0.0)*100:.2f}%")
+        k2.metric("Macro F1-Score", f"{multi_m.get('f1_macro', 0.0)*100:.2f}%")
+        k3.metric("Weighted F1-Score", f"{multi_m.get('f1_weighted', 0.0)*100:.2f}%")
+        per_class = [
+            {"Attack Category": c, "Precision %": round(v["precision"] * 100, 2), "Recall %": round(v["recall"] * 100, 2),
+             "F1 %": round(v["f1-score"] * 100, 2), "Test Samples": int(v["support"])}
+            for c, v in (multi_m.get("classification_report") or {}).items()
+            if isinstance(v, dict) and c in (multi_m.get("classes") or [])
+        ]
+        if per_class:
+            st.dataframe(pd.DataFrame(per_class), width="stretch", hide_index=True)
+            st.caption("Per-class results. Categories with very few test samples (e.g. Heartbleed, SQL Injection) are statistically unreliable.")
+
+    iso_m = summary.get("isolation_forest") or {}
+    if iso_m:
+        st.subheader("Anomaly Detector (Isolation Forest)")
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Benign flows flagged anomalous", f"{iso_m.get('benign_flag_rate', 0.0)*100:.2f}%")
+        i2.metric("Attack flows flagged anomalous", f"{iso_m.get('attack_flag_rate', 0.0)*100:.2f}%")
+        i3.metric("Trained on", "Benign flows only")
+        st.caption("Unsupervised: it never sees attack labels, so it is a secondary signal shown in the Traffic Analyzer and in alert explanations. It does not decide Benign vs Malicious.")
 
     st.markdown("---")
 
@@ -105,7 +148,7 @@ else:
             font=dict(color="#e2e8f0"),
             yaxis=dict(autorange="reversed")
         )
-        st.plotly_chart(fig_feat, use_container_width=True)
+        st.plotly_chart(fig_feat, width="stretch")
         st.caption("Gini feature importance weights assigned by the Random Forest model during training.")
 
     st.markdown("---")
@@ -113,12 +156,18 @@ else:
     # Viva Presentation Helper Guide
     st.subheader("🎓 Examination / Viva Presentation Metrics Guide")
     st.markdown("""
-    * **Accuracy (99.84%)**: Overall percentage of network flow instances correctly identified.
-    * **Precision (99.65%)**: Reliability measure; out of all traffic flagged as malicious by the model, 99.65% were genuine attacks.
-    * **Recall / Sensitivity (99.72%)**: Detection rate; out of all actual malicious traffic in the test set, 99.72% was successfully detected.
-    * **F1-Score (99.68%)**: Harmonic mean balancing precision and recall under class imbalance.
-    * **False Positive Rate (0.12%)**: Fraction of safe benign network flows incorrectly flagged as malicious (critical for avoiding security fatigue).
-    """)
+    * **Accuracy ({acc:.2f}%)**: Overall percentage of network flow instances correctly identified.
+    * **Precision ({prec:.2f}%)**: Reliability measure; out of all traffic flagged as malicious by the model, {prec:.2f}% were genuine attacks.
+    * **Recall / Sensitivity ({rec:.2f}%)**: Detection rate; out of all actual malicious traffic in the test set, {rec:.2f}% was successfully detected.
+    * **F1-Score ({f1:.2f}%)**: Harmonic mean balancing precision and recall under class imbalance.
+    * **False Positive Rate ({fpr:.2f}%)**: Fraction of safe benign network flows incorrectly flagged as malicious (critical for avoiding security fatigue).
+    """.format(
+        acc=bin_m.get('accuracy', 0.0) * 100,
+        prec=bin_m.get('precision', 0.0) * 100,
+        rec=bin_m.get('recall', 0.0) * 100,
+        f1=bin_m.get('f1_score', 0.0) * 100,
+        fpr=bin_m.get('false_positive_rate', 0.0) * 100,
+    ))
 
     # Download Evaluation Report
     report_text = generate_evaluation_report_text(summary)
